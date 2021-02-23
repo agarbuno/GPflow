@@ -1,0 +1,173 @@
+runtest: &runtest
+  steps:
+    - checkout
+    - run:
+        name: Install GPflow
+        command: |
+          pip install -U pip
+          pip install --use-feature=2020-resolver -e .
+          pip install --use-feature=2020-resolver -r tests_requirements.txt
+    - run:
+        name: Run tests
+        command: |
+          pytest -v -W ignore::UserWarning --durations=10 -m "${PYTEST_FILTER}" --cov=./gpflow ./tests
+    - run:
+        name: Upload coverage report
+        command: |
+          bash <(curl -s https://codecov.io/bash) -t "${CODECOV_TOKEN}"
+
+version: 2.1
+
+jobs:
+  verify-install:
+    docker:
+      - image: circleci/python:3.6-buster
+
+    steps:
+      - checkout
+      - run:
+          name: Check installed dependencies are compatible
+          command: |
+            pip install --use-feature=2020-resolver --progress-bar=off -e .
+            pip check -vvv
+            python -c "import gpflow"
+
+  type-check:
+    docker:
+      - image: circleci/python:3.6-buster
+
+    steps:
+      - checkout
+      - run:
+          name: Install type checker
+          command: pip install mypy
+      - run:
+          name: Run type checker
+          command: mypy .
+
+  unit-test:
+    <<: *runtest
+    docker:
+      - image: circleci/python:3.6-buster
+        environment:
+          PYTEST_FILTER: not notebooks
+
+  notebook-test:
+    <<: *runtest
+    docker:
+      - image: circleci/python:3.6-buster
+        environment:
+          PYTEST_FILTER: notebooks
+
+  format-checker:
+    docker:
+      - image: circleci/python:3.6-buster
+
+    steps:
+      - checkout
+      - run:
+          name: Install black and isort
+          command: |
+            pip install black==19.10b0 isort
+      - run:
+          name: Run format check
+          command: |
+            make format-check
+
+  trigger-docs-generation:
+    docker:
+      - image: circleci/python:3.6-buster
+        environment:
+            ORGANIZATION: GPflow
+            PROJECT: docs
+            BRANCH: << pipeline.git.branch >>
+
+    steps:
+      - run:
+          name: Trigger the Build Job in Docs repo
+          # Compiled documentation for readthedocs are built and stored in the https://github.com/GPflow/docs/ repository
+          # For configuration of the doc build, see https://github.com/GPflow/docs/blob/develop/.circleci/config.yml
+          command: |
+            BUILD_INFO=$(curl -X POST -H -d \
+                "{}" \
+                "https://circleci.com/api/v1/project/$ORGANIZATION/$PROJECT/tree/$BRANCH?circle-token=$DOCS_TOKEN")
+
+  deploy:
+    docker:
+      - image: circleci/python:3.6-buster
+    steps:
+      - checkout
+      - run:
+          name: Verify git tag vs. VERSION
+          command: |
+            VERSION="v$(cat VERSION | tr -d '\t\r\n ')"
+            if [ "$VERSION" != "$CIRCLE_TAG" ]; then
+              echo "The package version ($VERSION) and the latest tag version ($CIRCLE_TAG) are different"
+              exit 1
+            fi
+      - run:
+          name: Install twine
+          command: |
+            pip install twine
+      - run:
+          name: Init .pypirc
+          command: |
+            echo -e "[pypi]" >> ~/.pypirc
+            echo -e "username = artemav" >> ~/.pypirc
+            echo -e "password = $PYPI_PASSWORD" >> ~/.pypirc
+      - run:
+          name: Create pip package
+          command: |
+            python setup.py bdist_wheel sdist
+      - run:
+          name: Upload to PyPI
+          command: |
+            twine upload dist/*
+
+
+workflows:
+  version: 2.1
+  build_test_and_deploy:
+    jobs:
+      - verify-install:
+          filters:
+            tags:
+              only: /^v[0-9]+(\.[0-9]+)*(-rc[0-9]+)?/
+      - type-check:
+          filters:
+            tags:
+              only: /^v[0-9]+(\.[0-9]+)*(-rc[0-9]+)?/
+      - format-checker:
+          filters:
+            tags:
+              only: /^v[0-9]+(\.[0-9]+)*(-rc[0-9]+)?/
+      - unit-test:
+          requires:
+            - format-checker
+          filters:
+            tags:
+              only: /^v[0-9]+(\.[0-9]+)*(-rc[0-9]+)?/
+      - notebook-test:
+          requires:
+            - format-checker
+          filters:
+            tags:
+              only: /^v[0-9]+(\.[0-9]+)*(-rc[0-9]+)?/
+      - trigger-docs-generation:
+          requires:
+            - unit-test
+            - notebook-test
+          filters:
+            branches:
+              only:
+                - master
+                - develop
+      - deploy:
+          requires:
+            - unit-test
+            - notebook-test
+          filters:
+            tags:
+              only: /^v[0-9]+(\.[0-9]+)*(-rc[0-9]+)?/
+            branches:
+              ignore: /.*/

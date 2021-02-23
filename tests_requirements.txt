@@ -1,0 +1,20 @@
+mypy
+black==19.10b0
+isort>=5.1
+pytest>=3.5.0
+pytest-cov
+pytest-random-order
+pytest-xdist  # for local tests only
+codecov
+
+# Notebook tests:
+tensorflow-datasets
+nbformat
+nbconvert
+ipykernel
+jupyter_client
+jupytext
+
+matplotlib
+sklearn  # for mixture-density-network notebook
+ipywidgets  # Required by tensorflow-datasets
